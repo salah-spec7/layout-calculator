@@ -1,149 +1,299 @@
 import React, { useState, useEffect } from 'react';
-import { Printer, RotateCw, Save } from 'lucide-react';
-import DimensionInput from './DimensionInput';
-import SheetPreview from './SheetPreview';
-import LayoutResult from './LayoutResult';
-import { calculateLayout } from '../utils/calculationUtils';
-import { ItemDimension, LayoutResult as LayoutResultType } from '../types';
+import { FormControl } from './FormControl';
+import { CostDisplay } from './CostDisplay';
+import { convertToInches, paperMaterialOptions, stickerMaterialOptions } from '../utils/calculatorUtils';
+import { paperPricing, stickerPricing } from '../data/pricing';
+import { calculateSheetLayout, calculateSheetsRequired } from '../utils/sheetLayout';
 
-const PrintCalculator: React.FC = () => {
-  const [itemDimension, setItemDimension] = useState<ItemDimension>({
-    width: 3.5,
-    height: 2
-  });
+type Material = 'paper' | 'sticker';
+type PaperGSM = '200' | '250' | '300' | '100' | '130' | '170';
+type StickerType = 'Paper sticker' | 'Mirrorcoat' | 'Nontearable' | 'Gold' | 'Silver' | 'Holographic'| 'NT opaque'| 'paper sticker thick'|   'paper sticker thin'|   'NT sticker'|  'woodfree white'|  'transparent sticker'|  'NT matt thick' ;
+type Unit = 'inches' | 'mm' | 'cm' | 'feet';
+type PrintSide = 'single' | 'double';
+
+export const PaperCalculator: React.FC = () => {
+  const [width, setWidth] = useState<number>(8.5);
+  const [height, setHeight] = useState<number>(11);
+  const [unit, setUnit] = useState<Unit>('inches');
+  const [material, setMaterial] = useState<Material>('paper');
+  const [paperGSM, setPaperGSM] = useState<PaperGSM>('250');
+  const [stickerType, setStickerType] = useState<StickerType>('Paper sticker');
+  const [printSide, setPrintSide] = useState<PrintSide>('single');
+  const [quantity, setQuantity] = useState<number>(100);
+  const [hardLamination, setHardLamination] = useState<boolean>(false);
+  const [softLamination, setSoftLamination] = useState<boolean>(false);
   
-  const [allowRotation, setAllowRotation] = useState<boolean>(true);
-  const [layout, setLayout] = useState<LayoutResultType>({
-    itemsPerSheet: 0,
-    rows: 0,
-    columns: 0,
-    isRotated: false,
-    itemWidth: 0,
-    itemHeight: 0
-  });
-  
+  // Results
+  const [totalCost, setTotalCost] = useState<number>(0);
+  const [sheetsRequired, setSheetsRequired] = useState<number>(0);
+  const [itemsPerSheet, setItemsPerSheet] = useState<number>(0);
+
+  const calculateResults = () => {
+    // Convert dimensions to inches
+    const widthInInches = convertToInches(width, unit);
+    const heightInInches = convertToInches(height, unit);
+
+    // Shared layout engine: tries both orientations and picks whichever
+    // fits more items per sheet (rotation-aware), using the standard
+    // printable area and bleed.
+    const layout = calculateSheetLayout(widthInInches, heightInInches);
+    const itemsPerSheetCalc = layout.itemsPerSheet;
+    setItemsPerSheet(itemsPerSheetCalc);
+
+    const sheetsRequiredCalc = calculateSheetsRequired(quantity, itemsPerSheetCalc);
+    setSheetsRequired(sheetsRequiredCalc);
+    
+    // Calculate cost based on material and quantity
+    let pricePerSheet = 0;
+    
+    if (material === 'paper') {
+      // Check if pricing exists for the selected paper GSM
+      if (!paperPricing[paperGSM]) {
+        console.error(`No pricing found for paper GSM: ${paperGSM}`);
+        setTotalCost(0);
+        return;
+      }
+
+      // Find the correct price tier based on quantity
+      const priceTiers = Object.keys(paperPricing[paperGSM]);
+      if (!priceTiers.length) {
+        console.error(`No price tiers found for paper GSM: ${paperGSM}`);
+        setTotalCost(0);
+        return;
+      }
+
+      const priceTier = priceTiers
+        .map(Number)
+        .sort((a, b) => a - b)
+        .find(tier => sheetsRequiredCalc <= tier) || Math.max(...priceTiers.map(Number));
+      
+      const side = printSide === 'single' ? 'singleSided' : 'doubleSided';
+      
+      if (!paperPricing[paperGSM][priceTier]?.[side]) {
+        console.error(`No pricing found for ${side} printing at tier ${priceTier}`);
+        setTotalCost(0);
+        return;
+      }
+
+      pricePerSheet = paperPricing[paperGSM][priceTier][side];
+    } else {
+      // Check if pricing exists for the selected sticker type
+      if (!stickerPricing[stickerType]) {
+        console.error(`No pricing found for sticker type: ${stickerType}`);
+        setTotalCost(0);
+        return;
+      }
+
+      // Find the correct price tier based on quantity
+      const priceTiers = Object.keys(stickerPricing[stickerType]);
+      if (!priceTiers.length) {
+        console.error(`No price tiers found for sticker type: ${stickerType}`);
+        setTotalCost(0);
+        return;
+      }
+
+      const priceTier = priceTiers
+        .map(Number)
+        .sort((a, b) => a - b)
+        .find(tier => sheetsRequiredCalc <= tier) || Math.max(...priceTiers.map(Number));
+      
+      if (!stickerPricing[stickerType][priceTier]) {
+        console.error(`No pricing found for tier ${priceTier}`);
+        setTotalCost(0);
+        return;
+      }
+
+      pricePerSheet = stickerPricing[stickerType][priceTier];
+    }
+    
+    // Calculate total cost
+    let totalCostCalc = pricePerSheet * sheetsRequiredCalc;
+    
+    // Add lamination costs if selected (pricing for lamination not provided, using placeholder values)
+    if (hardLamination) totalCostCalc += sheetsRequiredCalc * 30; // Placeholder: Rs. 30 per sheet for hard lamination — replace with your real rate
+    if (softLamination) totalCostCalc += sheetsRequiredCalc * 5; // Placeholder: Rs. 5 per sheet for soft lamination — replace with your real rate
+    
+    setTotalCost(totalCostCalc);
+  };
+
+  // Recalculate whenever input values change
   useEffect(() => {
-    const newLayout = calculateLayout(itemDimension, allowRotation);
-    setLayout(newLayout);
-  }, [itemDimension, allowRotation]);
-  
-  const handleWidthChange = (width: number) => {
-    setItemDimension(prev => ({ ...prev, width }));
-  };
-  
-  const handleHeightChange = (height: number) => {
-    setItemDimension(prev => ({ ...prev, height }));
-  };
-  
-  const handleRotationToggle = () => {
-    setAllowRotation(prev => !prev);
-  };
-  
-  const handlePrint = () => {
-    window.print();
-  };
-  
-  const handleSave = () => {
-    alert('Layout saved!');
-  };
-  
+    calculateResults();
+  }, [width, height, unit, material, paperGSM, stickerType, printSide, quantity, hardLamination, softLamination]);
+
   return (
-    <div className="max-w-4xl mx-auto p-6 bg-white shadow-lg rounded-lg border border-primary transition-all duration-300">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-secondary">
-          Print Layout Calculator
-        </h1>
-      </div>
-      
-      <p className="mt-2 text-secondary">
-        Calculate how many items can fit on a standard 11" × 17" sheet of paper.
-      </p>
-      
-      <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-        <div>
-          <h2 className="text-lg font-semibold text-secondary mb-4">Item Dimensions</h2>
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <div className="space-y-6">
+        <h2 className="text-xl font-semibold text-gray-800">Paper/Sticker Options</h2>
+        
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <FormControl label="Width">
+            <input
+              type="number"
+              value={width}
+              onChange={(e) => setWidth(parseFloat(e.target.value) || 0)}
+              className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              min="0.1"
+              step="0.1"
+            />
+          </FormControl>
           
-          <DimensionInput 
-            label="Width" 
-            value={itemDimension.width} 
-            onChange={handleWidthChange} 
-          />
-          
-          <DimensionInput 
-            label="Height" 
-            value={itemDimension.height} 
-            onChange={handleHeightChange} 
-          />
-          
-          <div className="mt-6">
-            <label className="flex items-center cursor-pointer">
-              <div className="relative">
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  checked={allowRotation}
-                  onChange={handleRotationToggle}
-                />
-                <div className={`block w-10 h-6 rounded-full transition-colors duration-200 ${allowRotation ? 'bg-primary' : 'bg-gray-300'}`}>
-                </div>
-                <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition duration-200 ${allowRotation ? 'transform translate-x-4' : ''}`}>
-                </div>
-              </div>
-              <div className="ml-3 flex items-center text-secondary">
-                <RotateCw size={16} className="mr-1" />
-                Allow item rotation
-              </div>
-            </label>
-          </div>
-          
-          <LayoutResult 
-            layout={layout} 
-            originalWidth={itemDimension.width} 
-            originalHeight={itemDimension.height} 
-          />
-          
-          <div className="mt-6 flex space-x-3">
-            <button
-              onClick={handlePrint}
-              className="flex items-center px-4 py-2 bg-primary text-secondary rounded-md hover:bg-yellow-400 transition-colors duration-200"
-            >
-              <Printer size={16} className="mr-1" />
-              Print Layout
-            </button>
-            
-            <button
-              onClick={handleSave}
-              className="flex items-center px-4 py-2 bg-secondary text-primary rounded-md hover:bg-gray-800 transition-colors duration-200"
-            >
-              <Save size={16} className="mr-1" />
-              Save Layout
-            </button>
-          </div>
+          <FormControl label="Height">
+            <input
+              type="number"
+              value={height}
+              onChange={(e) => setHeight(parseFloat(e.target.value) || 0)}
+              className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              min="0.1"
+              step="0.1"
+            />
+          </FormControl>
         </div>
         
-        <div className="flex flex-col">
-          <h2 className="text-lg font-semibold text-secondary mb-4">Sheet Preview (11" × 17")</h2>
-          
-          <div className="flex-grow flex flex-col items-center justify-center">
-            <SheetPreview 
-              layout={layout} 
-              originalWidth={itemDimension.width} 
-              originalHeight={itemDimension.height} 
-            />
-            
-            <p className="mt-3 text-sm text-secondary text-center">
-              This preview shows how the items will be arranged on an 11" × 17" sheet.
-              {layout.isRotated && allowRotation && (
-                <span className="block font-medium text-primary mt-1">
-                  Items have been rotated for optimal fit.
-                </span>
-              )}
-            </p>
+        <FormControl label="Unit">
+          <div className="grid grid-cols-4 gap-2">
+            {['inches', 'mm', 'cm', 'feet'].map((u) => (
+              <button
+                key={u}
+                onClick={() => setUnit(u as Unit)}
+                className={`py-2 px-3 rounded-md border transition-colors ${
+                  unit === u 
+                    ? 'bg-blue-600 text-white border-blue-600' 
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                {u}
+              </button>
+            ))}
           </div>
-        </div>
+        </FormControl>
+        
+        <FormControl label="Material Type">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setMaterial('paper')}
+              className={`py-2 px-3 rounded-md border transition-colors ${
+                material === 'paper' 
+                  ? 'bg-blue-600 text-white border-blue-600' 
+                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              Paper
+            </button>
+            <button
+              onClick={() => setMaterial('sticker')}
+              className={`py-2 px-3 rounded-md border transition-colors ${
+                material === 'sticker' 
+                  ? 'bg-blue-600 text-white border-blue-600' 
+                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              Sticker
+            </button>
+          </div>
+        </FormControl>
+        
+        {material === 'paper' ? (
+          <FormControl label="Paper GSM">
+            <select
+              value={paperGSM}
+              onChange={(e) => setPaperGSM(e.target.value as PaperGSM)}
+              className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {paperMaterialOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option} GSM
+                </option>
+              ))}
+            </select>
+          </FormControl>
+        ) : (
+          <FormControl label="Sticker Type">
+            <select
+              value={stickerType}
+              onChange={(e) => setStickerType(e.target.value as StickerType)}
+              className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {stickerMaterialOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </FormControl>
+        )}
+        
+        {material === 'paper' && (
+          <FormControl label="Print Side">
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setPrintSide('single')}
+                className={`py-2 px-3 rounded-md border transition-colors ${
+                  printSide === 'single' 
+                    ? 'bg-blue-600 text-white border-blue-600' 
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                Single Sided
+              </button>
+              <button
+                onClick={() => setPrintSide('double')}
+                className={`py-2 px-3 rounded-md border transition-colors ${
+                  printSide === 'double' 
+                    ? 'bg-blue-600 text-white border-blue-600' 
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                Double Sided
+              </button>
+            </div>
+          </FormControl>
+        )}
+        
+        <FormControl label="Quantity">
+          <input
+            type="number"
+            value={quantity}
+            onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
+            className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            min="1"
+            step="1"
+          />
+        </FormControl>
+        
+        <FormControl label="Lamination">
+          <div className="space-y-2">
+            <label className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                checked={hardLamination}
+                onChange={(e) => setHardLamination(e.target.checked)}
+                className="form-checkbox rounded text-blue-500 focus:ring-blue-500"
+              />
+              <span>Hard Lamination</span>
+            </label>
+            <label className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                checked={softLamination}
+                onChange={(e) => setSoftLamination(e.target.checked)}
+                className="form-checkbox rounded text-blue-500 focus:ring-blue-500"
+              />
+              <span>Soft Lamination</span>
+            </label>
+          </div>
+        </FormControl>
+      </div>
+      
+      <div className="flex flex-col justify-center">
+        <CostDisplay
+          totalCost={totalCost}
+          additionalInfo={[
+            { label: 'Sheets Required', value: sheetsRequired.toString() },
+            { label: 'Items Per Sheet', value: itemsPerSheet.toString() }
+          ]}
+        />
       </div>
     </div>
   );
 };
-
-export default PrintCalculator;
